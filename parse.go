@@ -14,6 +14,11 @@ type decoder struct {
 	buf   *bytes.Buffer
 }
 
+const (
+	truncateCascadeBit         = 1
+	truncateRestartIdentityBit = 2
+)
+
 func (d *decoder) bool() bool {
 	x := d.buf.Next(1)[0]
 	return x != 0
@@ -168,6 +173,13 @@ type Delete struct {
 	Row []Tuple
 }
 
+type Truncate struct {
+	Raw             []byte
+	Cascade         bool
+	RestartIdentity bool
+	RelationOIDs    []uint32
+}
+
 type Origin struct {
 	LSN  uint64
 	Name string
@@ -198,6 +210,7 @@ func (Relation) msg() {}
 func (Update) msg()   {}
 func (Insert) msg()   {}
 func (Delete) msg()   {}
+func (Truncate) msg() {}
 func (Commit) msg()   {}
 func (Origin) msg()   {}
 func (Type) msg()     {}
@@ -264,6 +277,20 @@ func Parse(src []byte) (Message, error) {
 		dl.Old = d.rowinfo('O')
 		dl.Row = d.tupledata()
 		return dl, nil
+	case 'T':
+		tr := Truncate{}
+
+		relationsCnt := int(d.uint32())
+		options := d.uint8()
+		tr.Cascade = options&truncateCascadeBit == 1
+		tr.RestartIdentity = options&truncateRestartIdentityBit == 1
+
+		tr.RelationOIDs = make([]uint32, relationsCnt)
+		for i := 0; i < relationsCnt; i++ {
+			tr.RelationOIDs[i] = d.uint32()
+		}
+
+		return tr, nil
 	default:
 		return nil, fmt.Errorf("Unknown message type for %s (%d)", []byte{msgType}, msgType)
 	}
