@@ -10,6 +10,11 @@ import (
 	"github.com/jackc/pgx"
 )
 
+const (
+	pgDuplicateObjectErrorCode = "42710"
+	pgOutputPlugin             = "pgoutput"
+)
+
 type Subscription struct {
 	SlotName      string
 	Publication   string
@@ -50,9 +55,9 @@ func pluginArgs(version, publication string) string {
 func (s *Subscription) CreateSlot() (err error) {
 	// If creating the replication slot fails with code 42710, this means
 	// the replication slot already exists.
-	if err = s.conn.CreateReplicationSlot(s.SlotName, "pgoutput"); err != nil {
+	if err = s.conn.CreateReplicationSlot(s.SlotName, pgOutputPlugin); err != nil {
 		pgerr, ok := err.(pgx.PgError)
-		if !ok || pgerr.Code != "42710" {
+		if !ok || pgerr.Code != pgDuplicateObjectErrorCode {
 			return
 		}
 
@@ -94,6 +99,12 @@ func (s *Subscription) Flush() error {
 	return err
 }
 
+func (s *Subscription) AdvanceLSN(lsn uint64) error {
+	atomic.StoreUint64(&s.maxWal, lsn)
+
+	return s.Flush()
+}
+
 // Start replication and block until error or ctx is canceled
 func (s *Subscription) Start(ctx context.Context, startLSN uint64, h Handler) (err error) {
 	err = s.conn.StartReplication(s.SlotName, startLSN, -1, pluginArgs("1", s.Publication))
@@ -104,12 +115,12 @@ func (s *Subscription) Start(ctx context.Context, startLSN uint64, h Handler) (e
 	s.maxWal = startLSN
 
 	sendStatus := func() error {
-		walPos := atomic.LoadUint64(&s.maxWal)
+		walWrite := atomic.LoadUint64(&s.maxWal)
 		walLastFlushed := atomic.LoadUint64(&s.walFlushed)
 
 		// Confirm only walRetain bytes in past
 		// If walRetain is zero - will confirm current walPos as flushed
-		walFlush := walPos - s.walRetain
+		walFlush := walWrite - s.walRetain
 
 		if walLastFlushed > walFlush {
 			// If there was a manual flush - report it's position until we're past it
@@ -119,7 +130,7 @@ func (s *Subscription) Start(ctx context.Context, startLSN uint64, h Handler) (e
 			walFlush = 0
 		}
 
-		return s.sendStatus(walPos, walFlush)
+		return s.sendStatus(walWrite, walFlush)
 	}
 
 	go func() {
@@ -144,7 +155,7 @@ func (s *Subscription) Start(ctx context.Context, startLSN uint64, h Handler) (e
 		case <-ctx.Done():
 			// Send final status and exit
 			if err = sendStatus(); err != nil {
-				return fmt.Errorf("Unable to send final status: %s", err)
+				return fmt.Errorf("unable to send final status: %s", err)
 			}
 
 			return
@@ -178,13 +189,9 @@ func (s *Subscription) Start(ctx context.Context, startLSN uint64, h Handler) (e
 					continue
 				}
 
-				if walStart > atomic.LoadUint64(&s.maxWal) {
-					atomic.StoreUint64(&s.maxWal, walStart)
-				}
-
 				logmsg, err = Parse(message.WalMessage.WalData)
 				if err != nil {
-					return fmt.Errorf("invalid pgoutput message: %s", err)
+					return fmt.Errorf("invalid message: %s", err)
 				}
 
 				// Ignore the error from handler for now
@@ -198,7 +205,7 @@ func (s *Subscription) Start(ctx context.Context, startLSN uint64, h Handler) (e
 					}
 				}
 			} else {
-				return fmt.Errorf("No WalMessage/ServerHeartbeat defined in packet, should not happen")
+				return fmt.Errorf("no WalMessage/ServerHeartbeat defined in packet, should not happen")
 			}
 		}
 	}
