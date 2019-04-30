@@ -9,7 +9,7 @@ import (
 type RelationSet struct {
 	// Mutex probably will be redundant as receiving
 	// a replication stream is currently strictly single-threaded
-	relations map[uint32]Relation
+	relations map[pgtype.OID]Relation
 	connInfo  *pgtype.ConnInfo
 }
 
@@ -17,19 +17,19 @@ type RelationSet struct {
 // Optionally ConnInfo can be provided, however currently we need some changes to pgx to get it out
 // from ReplicationConn.
 func NewRelationSet(ci *pgtype.ConnInfo) *RelationSet {
-	return &RelationSet{map[uint32]Relation{}, ci}
+	return &RelationSet{map[pgtype.OID]Relation{}, ci}
 }
 
 func (rs *RelationSet) Add(r Relation) {
 	rs.relations[r.ID] = r
 }
 
-func (rs *RelationSet) Get(ID uint32) (r Relation, ok bool) {
+func (rs *RelationSet) Get(ID pgtype.OID) (r Relation, ok bool) {
 	r, ok = rs.relations[ID]
 	return
 }
 
-func (rs *RelationSet) Values(id uint32, row []Tuple) (map[string]pgtype.Value, error) {
+func (rs *RelationSet) Values(id pgtype.OID, row []Tuple) (map[string]pgtype.Value, error) {
 	values := map[string]pgtype.Value{}
 	rel, ok := rs.Get(id)
 	if !ok {

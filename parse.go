@@ -14,9 +14,15 @@ type decoder struct {
 	buf   *bytes.Buffer
 }
 
+type TupleKind uint8
+
 const (
 	truncateCascadeBit         = 1
 	truncateRestartIdentityBit = 2
+
+	TupleKindNull    TupleKind = 'n' // Identifies the data as NULL value.
+	TupleKindToasted           = 'u' // Identifies unchanged TOASTed value (the actual value is not sent).
+	TupleKindText              = 't' // Identifies the data as text formatted value.
 )
 
 func (d *decoder) bool() bool {
@@ -80,12 +86,14 @@ func (d *decoder) tupledata() []Tuple {
 	size := int(d.uint16())
 	data := make([]Tuple, size)
 	for i := 0; i < size; i++ {
-		switch d.buf.Next(1)[0] {
-		case 'n':
-		case 'u':
-		case 't':
+		switch tk := TupleKind(d.buf.Next(1)[0]); tk {
+		case TupleKindText:
 			vsize := int(d.order.Uint32(d.buf.Next(4)))
-			data[i] = Tuple{Flag: 't', Value: d.buf.Next(vsize)}
+			data[i] = Tuple{Flag: tk, Value: d.buf.Next(vsize)}
+		case TupleKindNull:
+			fallthrough
+		case TupleKindToasted:
+			data[i] = Tuple{Flag: tk, Value: []byte{}}
 		}
 	}
 	return data
@@ -98,7 +106,7 @@ func (d *decoder) columns() []Column {
 		data[i] = Column{
 			Key:  d.bool(),
 			Name: d.string(),
-			Type: d.uint32(),
+			Type: pgtype.OID(d.uint32()),
 			Mode: d.uint32(),
 		}
 	}
@@ -126,7 +134,7 @@ type Commit struct {
 
 type Relation struct {
 	// ID of the relation.
-	ID uint32
+	ID pgtype.OID
 	// Namespace (empty string for pg_catalog).
 	Namespace string
 	Name      string
@@ -140,14 +148,14 @@ func (r Relation) IsEmpty() bool {
 
 type Type struct {
 	// ID of the data type
-	ID        uint32
+	ID        pgtype.OID
 	Namespace string
 	Name      string
 }
 
 type Insert struct {
 	/// ID of the relation corresponding to the ID in the relation message.
-	RelationID uint32
+	RelationID pgtype.OID
 	// Identifies the following TupleData message as a new tuple.
 	New bool
 	Row []Tuple
@@ -155,7 +163,7 @@ type Insert struct {
 
 type Update struct {
 	/// ID of the relation corresponding to the ID in the relation message.
-	RelationID uint32
+	RelationID pgtype.OID
 	// Identifies the following TupleData message as a new tuple.
 	Old    bool
 	Key    bool
@@ -166,7 +174,7 @@ type Update struct {
 
 type Delete struct {
 	/// ID of the relation corresponding to the ID in the relation message.
-	RelationID uint32
+	RelationID pgtype.OID
 	// Identifies the following TupleData message as a new tuple.
 	Key bool // TODO
 	Old bool // TODO
@@ -177,7 +185,7 @@ type Truncate struct {
 	Raw             []byte
 	Cascade         bool
 	RestartIdentity bool
-	RelationOIDs    []uint32
+	RelationOIDs    []pgtype.OID
 }
 
 type Origin struct {
@@ -193,11 +201,12 @@ type DecoderValue interface {
 type Column struct {
 	Key  bool
 	Name string
-	Type uint32
+	Type pgtype.OID
 	Mode uint32
 }
+
 type Tuple struct {
-	Flag  int8
+	Flag  TupleKind
 	Value []byte
 }
 
@@ -214,6 +223,9 @@ func (Truncate) msg() {}
 func (Commit) msg()   {}
 func (Origin) msg()   {}
 func (Type) msg()     {}
+
+func (t Tuple) IsNull() bool { return t.Flag == TupleKindNull }
+func (t Tuple) IsText() bool { return t.Flag == TupleKindText }
 
 // Parse a logical replication message.
 // See https://www.postgresql.org/docs/current/static/protocol-logicalrep-message-formats.html
@@ -241,7 +253,7 @@ func Parse(src []byte) (Message, error) {
 		return o, nil
 	case 'R':
 		r := Relation{}
-		r.ID = d.uint32()
+		r.ID = pgtype.OID(d.uint32())
 		r.Namespace = d.string()
 		r.Name = d.string()
 		r.Replica = d.uint8()
@@ -249,19 +261,19 @@ func Parse(src []byte) (Message, error) {
 		return r, nil
 	case 'Y':
 		t := Type{}
-		t.ID = d.uint32()
+		t.ID = pgtype.OID(d.uint32())
 		t.Namespace = d.string()
 		t.Name = d.string()
 		return t, nil
 	case 'I':
 		i := Insert{}
-		i.RelationID = d.uint32()
+		i.RelationID = pgtype.OID(d.uint32())
 		i.New = d.uint8() > 0
 		i.Row = d.tupledata()
 		return i, nil
 	case 'U':
 		u := Update{}
-		u.RelationID = d.uint32()
+		u.RelationID = pgtype.OID(d.uint32())
 		u.Key = d.rowinfo('K')
 		u.Old = d.rowinfo('O')
 		if u.Key || u.Old {
@@ -272,7 +284,7 @@ func Parse(src []byte) (Message, error) {
 		return u, nil
 	case 'D':
 		dl := Delete{}
-		dl.RelationID = d.uint32()
+		dl.RelationID = pgtype.OID(d.uint32())
 		dl.Key = d.rowinfo('K')
 		dl.Old = d.rowinfo('O')
 		dl.Row = d.tupledata()
@@ -285,9 +297,9 @@ func Parse(src []byte) (Message, error) {
 		tr.Cascade = options&truncateCascadeBit == 1
 		tr.RestartIdentity = options&truncateRestartIdentityBit == 1
 
-		tr.RelationOIDs = make([]uint32, relationsCnt)
+		tr.RelationOIDs = make([]pgtype.OID, relationsCnt)
 		for i := 0; i < relationsCnt; i++ {
-			tr.RelationOIDs[i] = d.uint32()
+			tr.RelationOIDs[i] = pgtype.OID(d.uint32())
 		}
 
 		return tr, nil
