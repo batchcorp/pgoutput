@@ -11,7 +11,7 @@ import (
 )
 
 type Subscription struct {
-	Name          string
+	SlotName      string
 	Publication   string
 	WaitTimeout   time.Duration
 	StatusTimeout time.Duration
@@ -29,9 +29,9 @@ type Subscription struct {
 
 type Handler func(Message, uint64) error
 
-func NewSubscription(conn *pgx.ReplicationConn, name, publication string, walRetain uint64, failOnHandler bool) *Subscription {
+func NewSubscription(conn *pgx.ReplicationConn, slotName, publication string, walRetain uint64, failOnHandler bool) *Subscription {
 	return &Subscription{
-		Name:          name,
+		SlotName:      slotName,
 		Publication:   publication,
 		WaitTimeout:   1 * time.Second,
 		StatusTimeout: 10 * time.Second,
@@ -50,7 +50,7 @@ func pluginArgs(version, publication string) string {
 func (s *Subscription) CreateSlot() (err error) {
 	// If creating the replication slot fails with code 42710, this means
 	// the replication slot already exists.
-	if err = s.conn.CreateReplicationSlot(s.Name, "pgoutput"); err != nil {
+	if err = s.conn.CreateReplicationSlot(s.SlotName, "pgoutput"); err != nil {
 		pgerr, ok := err.(pgx.PgError)
 		if !ok || pgerr.Code != "42710" {
 			return
@@ -96,7 +96,7 @@ func (s *Subscription) Flush() error {
 
 // Start replication and block until error or ctx is canceled
 func (s *Subscription) Start(ctx context.Context, startLSN uint64, h Handler) (err error) {
-	err = s.conn.StartReplication(s.Name, startLSN, -1, pluginArgs("1", s.Publication))
+	err = s.conn.StartReplication(s.SlotName, startLSN, -1, pluginArgs("1", s.Publication))
 	if err != nil {
 		return fmt.Errorf("failed to start replication: %s", err)
 	}
