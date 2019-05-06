@@ -107,7 +107,7 @@ func (d *decoder) columns() []Column {
 			Key:  d.bool(),
 			Name: d.string(),
 			Type: pgtype.OID(d.uint32()),
-			Mode: d.uint32(),
+			Mode: d.int32(),
 		}
 	}
 	return data
