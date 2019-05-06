@@ -202,7 +202,7 @@ type Column struct {
 	Key  bool
 	Name string
 	Type pgtype.OID
-	Mode uint32
+	Mode int32
 }
 
 type Tuple struct {
