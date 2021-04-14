@@ -2,7 +2,6 @@ package pgoutput
 
 import (
 	"fmt"
-
 	"github.com/jackc/pgx/pgtype"
 )
 
@@ -42,7 +41,9 @@ func (rs *RelationSet) Values(id pgtype.OID, row []Tuple) (map[string]pgtype.Val
 		decoder := col.Decoder()
 
 		if err := decoder.DecodeText(rs.connInfo, tuple.Value); err != nil {
-			return nil, fmt.Errorf("error decoding tuple %d: %s", i, err)
+			// This is most likely PGX trying to strconv.ParseInt() an empty string for an int field
+			// Nothing we can do about this, so ignore the field so we can get delete record values
+			continue
 		}
 
 		values[col.Name] = decoder
