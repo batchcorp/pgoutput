@@ -1,4 +1,4 @@
-module github.com/batchcorp/pgoutput
+module github.com/streamdal/pgoutput
 
 go 1.15
 
